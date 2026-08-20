@@ -1,4 +1,67 @@
 services:
+  bot1:
+    build: .
+    container_name: musicbots_1
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=1
+
+  bot2:
+    build: .
+    container_name: musicbots_2
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=2
+
+  bot3:
+    build: .
+    container_name: musicbots_3
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=3
+
+  bot4:
+    build: .
+    container_name: musicbots_4
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=4
+
+  bot5:
+    build: .
+    container_name: musicbots_5
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=5
+
+  bot6:
+    build: .
+    container_name: musicbots_6
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=6
+
+  bot7:
+    build: .
+    container_name: musicbots_7
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=7
+
+  bot8:
+    build: .
+    container_name: musicbots_8
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=8
 
   bot9:
     build: .
