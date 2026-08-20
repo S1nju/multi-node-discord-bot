@@ -32,9 +32,12 @@ def get_ffmpeg_options():
 
 FFMPEG_OPTIONS = get_ffmpeg_options()
 
+if not os.path.exists("./cache"):
+    os.makedirs("./cache")
+
 ytdl_format_options = {
     'format': 'bestaudio/best',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'outtmpl': './cache/%(extractor)s-%(id)s.%(ext)s',
     'restrictfilenames': True,
     'noplaylist': True,
     'nocheckcertificate': True,
@@ -129,7 +132,8 @@ class MusicCog(commands.Cog):
         
         loop = asyncio.get_event_loop()
         try:
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+            # Setting download=True so it hits the cache securely
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=True))
         except Exception as e:
             print(f"Failed yt-dlp extraction: {e}")
             return None, None
@@ -137,7 +141,10 @@ class MusicCog(commands.Cog):
         if 'entries' in data:
             data = data['entries'][0]
             
-        return data['url'], data.get('title', 'Unknown Title')
+        # Natively fetches the exact local file path pulled or cached by yt-dlp
+        filename = ytdl.prepare_filename(data)
+        
+        return filename, data.get('title', 'Unknown Title')
 
     def play_next(self, error, target_channel):
         if error:
@@ -171,7 +178,13 @@ class MusicCog(commands.Cog):
                     return
 
             try:
-                vc.play(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), after=lambda e: self.play_next(e, target_channel))
+                # If we are pulling a local cached file, we ditch the proxy and HTTP reconnect bindings!
+                if audio_url.startswith("http"):
+                    play_options = FFMPEG_OPTIONS
+                else:
+                    play_options = {'options': '-vn'}
+
+                vc.play(discord.FFmpegPCMAudio(audio_url, **play_options), after=lambda e: self.play_next(e, target_channel))
                 
                 try:
                     await message.remove_reaction("🔍", self.bot.user)
