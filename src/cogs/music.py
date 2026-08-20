@@ -109,6 +109,20 @@ class MusicCog(commands.Cog):
         self._connection_lock = asyncio.Lock()
         self.queue = []
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        target_channel_id = getattr(self.bot, 'channel_id', None)
+        if target_channel_id and str(target_channel_id).isdigit():
+            target_voice_channel = self.bot.get_channel(int(target_channel_id))
+            if target_voice_channel:
+                async with self._connection_lock:
+                    if not target_voice_channel.guild.voice_client:
+                        try:
+                            await target_voice_channel.connect(timeout=10.0, reconnect=True)
+                            print(f"✅ Auto-Joined voice channel: {target_voice_channel.name}")
+                        except Exception as e:
+                            print(f"❌ Failed auto-join: {e}")
+
     async def search_ytdl(self, query: str):
         if not query.startswith('http'):
             query = f'ytsearch:{query}'
