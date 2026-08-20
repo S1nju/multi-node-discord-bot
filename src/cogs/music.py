@@ -132,19 +132,52 @@ class MusicCog(commands.Cog):
         
         loop = asyncio.get_event_loop()
         try:
-            # Setting download=True so it hits the cache securely
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=True))
+            # Phase 1: Fast metadata extraction to detect exact ID and cache footprint
+            data_meta = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
         except Exception as e:
-            print(f"Failed yt-dlp extraction: {e}")
+            print(f"Failed yt-dlp metadata extraction: {e}")
             return None, None
             
-        if 'entries' in data:
-            data = data['entries'][0]
+        if 'entries' in data_meta:
+            data_meta = data_meta['entries'][0]
             
-        # Natively fetches the exact local file path pulled or cached by yt-dlp
-        filename = ytdl.prepare_filename(data)
+        video_id = data_meta.get('id')
+        filename = ytdl.prepare_filename(data_meta)
         
-        return filename, data.get('title', 'Unknown Title')
+        if not video_id or os.path.exists(filename):
+            # Already formally cached or uncacheable, return instantly!
+            return filename, data_meta.get('title', 'Unknown Title')
+            
+        # Phase 2: Active download sequence protected by cross-container I/O locks
+        lock_path = f"./cache/{video_id}.lock"
+        
+        while os.path.exists(lock_path):
+            await asyncio.sleep(1)
+            
+        # Check one more time if the ghost process finished downloading it while we waited
+        if os.path.exists(filename):
+            return filename, data_meta.get('title', 'Unknown Title')
+            
+        try:
+            # Trap the global cache lock for this track ID footprint
+            with open(lock_path, 'w') as f:
+                f.write(str(self.bot.bot_index))
+                
+            data_full = await loop.run_in_executor(None, lambda: ytdl.extract_info(data_meta['webpage_url'], download=True))
+            if 'entries' in data_full:
+                data_full = data_full['entries'][0]
+            filename = ytdl.prepare_filename(data_full)
+        except Exception as e:
+            print(f"Failed yt-dlp locked extraction: {e}")
+            return None, None
+        finally:
+            if os.path.exists(lock_path):
+                try:
+                    os.remove(lock_path)
+                except:
+                    pass
+                    
+        return filename, data_meta.get('title', 'Unknown Title')
 
     def play_next(self, error, target_channel):
         if error:
