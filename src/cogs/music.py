@@ -206,13 +206,19 @@ class MusicCog(commands.Cog):
         if after.channel != target_voice_channel:
             async with self._connection_lock:
                 vc = member.guild.voice_client
-                if vc:
-                    await vc.move_to(target_voice_channel)
-                elif after.channel is None:
+                if after.channel is None:
+                    if vc:
+                        try:
+                            await vc.disconnect(force=True)
+                        except:
+                            pass
                     try:
                         await target_voice_channel.connect(timeout=10.0, reconnect=True)
-                    except Exception:
+                    except:
                         pass
+                else:
+                    if vc and vc.is_connected():
+                        await vc.move_to(target_voice_channel)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
