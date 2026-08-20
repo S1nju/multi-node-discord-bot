@@ -4,3 +4,4 @@ PyNaCl
 aiohttp
 davey
 yt-dlp
+spotipy

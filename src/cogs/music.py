@@ -3,6 +3,8 @@ from discord.ext import commands
 import asyncio
 import os
 import yt_dlp
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 from typing import Optional
 from src.checks import check_chat
 
@@ -50,6 +52,15 @@ if os.path.exists('cookies.txt'):
     ytdl_format_options['cookiefile'] = 'cookies.txt'
 
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+
+SP_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SP_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+sp = None
+if SP_CLIENT_ID and SP_CLIENT_SECRET:
+    try:
+        sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SP_CLIENT_ID, client_secret=SP_CLIENT_SECRET))
+    except Exception as e:
+        print("Spotify auth failed:", e)
 
 class PlayerControls(discord.ui.View):
     def __init__(self, vc, connection_lock, cog):
@@ -99,7 +110,6 @@ class MusicCog(commands.Cog):
         self.queue = []
 
     async def search_ytdl(self, query: str):
-        # yt-dlp expects 'ytsearch:' prefix for generic searches
         if not query.startswith('http'):
             query = f'ytsearch:{query}'
         
@@ -120,10 +130,20 @@ class MusicCog(commands.Cog):
             print(f"Playback error: {error}")
             
         if len(self.queue) > 0:
-            audio_url, title = self.queue.pop(0)
-            asyncio.run_coroutine_threadsafe(self.start_playback(audio_url, title, message, target_channel), self.bot.loop)
+            search_term = self.queue.pop(0)
+            asyncio.run_coroutine_threadsafe(self.process_and_play(search_term, message, target_channel), self.bot.loop)
         else:
             print("Queue finished.")
+
+    async def process_and_play(self, search_term, message, target_channel):
+        audio_url, title = await self.search_ytdl(search_term)
+        if not audio_url:
+            await message.channel.send(f"❌ حدث خطأ في استخراج المسار من الطابور! (Failed to fetch track from queue): {search_term}")
+            # Try next in queue if this fails
+            self.play_next(None, message, target_channel)
+            return
+            
+        await self.start_playback(audio_url, title, message, target_channel)
 
     async def start_playback(self, audio_url, title, message, target_channel):
         async with self._connection_lock:
@@ -138,7 +158,6 @@ class MusicCog(commands.Cog):
 
             try:
                 vc.play(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), after=lambda e: self.play_next(e, message, target_channel))
-                # Send Interactive Message
                 view = PlayerControls(vc, self._connection_lock, self)
                 embed = discord.Embed(
                     title="🎵 جاري التشغيل / Now Playing", 
@@ -148,11 +167,10 @@ class MusicCog(commands.Cog):
                 await message.channel.send(embed=embed, view=view)
             except Exception as e:
                 print(f"Playback error: {e}")
-                await message.channel.send("❌ فشل التشغيل! يرجى المحاولة مرة أخرى. (Playback failed, please try again).")
+                await message.channel.send("❌ فشل التشغيل! يرجى المحاولة مرة أخرى. (Playback failed).")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        # Anti-Hijack / Unkickable protocol
         if member.id != self.bot.user.id:
             return
             
@@ -164,15 +182,12 @@ class MusicCog(commands.Cog):
         if not target_voice_channel:
             return
 
-        # If the bot was moved or disconnected forcefully
         if after.channel != target_voice_channel:
             async with self._connection_lock:
                 vc = member.guild.voice_client
                 if vc:
-                    # Force moved to another channel -> drag it immediately back
                     await vc.move_to(target_voice_channel)
                 elif after.channel is None:
-                    # Kicked intentionally -> violently connect back
                     try:
                         await target_voice_channel.connect(timeout=10.0, reconnect=True)
                     except Exception:
@@ -208,7 +223,6 @@ class MusicCog(commands.Cog):
             await message.add_reaction("❌")
             return
 
-        # STRICT LOCK: Only allow usage if the user is in the designated voice channel!
         if getattr(self.bot, 'channel_id', None):
             if not message.author.voice or message.author.voice.channel.id != target_channel.id:
                 await message.channel.send("❌ عذراً، لا يمكنك استخدام البوت إلا إذا كنت متواجداً في غرفته الصوتية! (You must be in the bot's designated voice channel to use commands.)")
@@ -224,7 +238,7 @@ class MusicCog(commands.Cog):
             return
         elif lower_q in ("skip", "s", "سكب"):
             if message.guild.voice_client and message.guild.voice_client.is_playing():
-                message.guild.voice_client.stop() # Triggers the play_next callback implicitly
+                message.guild.voice_client.stop() 
             await message.add_reaction("⏭️")
             return
         elif lower_q in ("pause",):
@@ -247,36 +261,45 @@ class MusicCog(commands.Cog):
         if not search_term:
             return
 
-        await message.add_reaction("🔍")
-        
-        audio_url, title = await self.search_ytdl(search_term)
-        if not audio_url:
-            await message.remove_reaction("🔍", self.bot.user)
-            await message.add_reaction("❌")
-            await message.channel.send("❌ حدث خطأ، يرجى المحاولة مرة أخرى! (Error fetching track, please try again).")
-            return
+        # Spotipy Parser
+        if "open.spotify.com/track/" in search_term and sp:
+            try:
+                track = sp.track(search_term)
+                search_term = f"{track['name']} {track['artists'][0]['name']}"
+            except Exception as e:
+                print("Failed to parse Spotify track:", e)
+        elif "open.spotify.com/playlist/" in search_term and sp:
+            try:
+                playlist = sp.playlist_tracks(search_term)
+                tracks = playlist['items']
+                if len(tracks) > 0:
+                    first_track = tracks[0]['track']
+                    search_term = f"{first_track['name']} {first_track['artists'][0]['name']}"
+                    for item in tracks[1:]:
+                        if item['track']:
+                            q_term = f"{item['track']['name']} {item['track']['artists'][0]['name']}"
+                            self.queue.append(q_term)
+                    await message.channel.send(f"✅ تم سحب قائمة Spotify! عدد المقاطع المضافة: {len(tracks)-1}")
+            except Exception as e:
+                print("Failed to parse Spotify playlist:", e)
 
-        await message.remove_reaction("🔍", self.bot.user)
-        
-        # QUEUE LOGIC INJECTION
         vc = message.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
-            self.queue.append((audio_url, title))
+            self.queue.append(search_term)
             await message.add_reaction("🎵")
-            await message.channel.send(f"✅ تمت الإضافة إلى قائمة الانتظار (Added to queue): **{title}**")
+            await message.channel.send(f"✅ تمت الإضافة إلى قائمة الانتظار (Added to queue)")
         else:
-            await message.add_reaction("🎵")
-            await self.start_playback(audio_url, title, message, target_channel)
+            await message.add_reaction("🔍")
+            await self.process_and_play(search_term, message, target_channel)
 
     @commands.command(name="status", aliases=["info", "حالة"])
     @commands.check(check_chat)
     async def status(self, ctx: commands.Context):
         embed = discord.Embed(
-            title=f"📡 حالة البوت #{self.bot.bot_index} (Native Invidious Player)",
+            title=f"📡 حالة البوت #{self.bot.bot_index} (Native Player)",
             color=discord.Color.blue()
         )
         embed.add_field(name="حرف التفعيل", value=f"`{self.bot.play_letter}` (مثال: `{self.bot.play_letter} song name`)", inline=True)
-        embed.add_field(name="النظام", value="Invidious API Native Parsing", inline=False)
         await ctx.send(embed=embed)
 
     @commands.command(name="help", aliases=["مساعدة", "اوامر", "أوامر"])
@@ -289,7 +312,7 @@ class MusicCog(commands.Cog):
             color=discord.Color.purple()
         )
         commands_list = [
-            (f"🎵 تشغيل أغنية / اضافة للقائمة", f"`{letter} <اسم المقطع>`"),
+            (f"🎵 تشغيل أغنية / اضافة للقائمة", f"`{letter} <اسم المقطع / رابط Spotify>`"),
             (f"⏭️ سكب / تخطي", f"`{letter} skip` / `{letter} s`"),
             (f"⏹️ إيقاف / مسح القائمة", f"`{letter} stop`"),
             (f"⏸️ إيقاف مؤقت", f"`{letter} pause`"),
