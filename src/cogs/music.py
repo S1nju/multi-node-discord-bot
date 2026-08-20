@@ -271,6 +271,10 @@ class MusicCog(commands.Cog):
                             await vc.disconnect(force=True)
                         except:
                             pass
+                    
+                    # Small cooldown to prevent rapid connect/disconnect API loops
+                    await asyncio.sleep(3.0)
+                    
                     try:
                         await target_voice_channel.connect(timeout=10.0, reconnect=True)
                     except:
