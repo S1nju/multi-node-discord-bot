@@ -1,0 +1,11 @@
+services:
+  bot1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: musicbots_1
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - BOT_INDEX=1
