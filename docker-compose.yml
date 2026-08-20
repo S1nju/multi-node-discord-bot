@@ -62,3 +62,11 @@ services:
     env_file: .env
     environment:
       - BOT_INDEX=8
+
+  bot9:
+    build: .
+    container_name: musicbots_9
+    restart: always
+    env_file: .env
+    environment:
+      - BOT_INDEX=8
