@@ -6,4 +6,4 @@ services:
     restart: always
     env_file: .env
     environment:
-      - BOT_INDEX=8
+      - BOT_INDEX=9

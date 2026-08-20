@@ -125,13 +125,13 @@ class MusicCog(commands.Cog):
             
         return data['url'], data.get('title', 'Unknown Title')
 
-    def play_next(self, error, message, target_channel):
+    def play_next(self, error, target_channel):
         if error:
             print(f"Playback error: {error}")
             
         if len(self.queue) > 0:
-            search_term = self.queue.pop(0)
-            asyncio.run_coroutine_threadsafe(self.process_and_play(search_term, message, target_channel), self.bot.loop)
+            search_term, original_message = self.queue.pop(0)
+            asyncio.run_coroutine_threadsafe(self.process_and_play(search_term, original_message, target_channel), self.bot.loop)
         else:
             print("Queue finished.")
 
@@ -140,7 +140,7 @@ class MusicCog(commands.Cog):
         if not audio_url:
             await message.channel.send(f"❌ حدث خطأ في استخراج المسار من الطابور! (Failed to fetch track from queue): {search_term}")
             # Try next in queue if this fails
-            self.play_next(None, message, target_channel)
+            self.play_next(None, target_channel)
             return
             
         await self.start_playback(audio_url, title, message, target_channel)
@@ -157,7 +157,14 @@ class MusicCog(commands.Cog):
                     return
 
             try:
-                vc.play(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), after=lambda e: self.play_next(e, message, target_channel))
+                vc.play(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), after=lambda e: self.play_next(e, target_channel))
+                
+                try:
+                    await message.remove_reaction("🔍", self.bot.user)
+                    await message.add_reaction("🎵")
+                except:
+                    pass
+                
                 view = PlayerControls(vc, self._connection_lock, self)
                 embed = discord.Embed(
                     title="🎵 جاري التشغيل / Now Playing", 
@@ -278,19 +285,24 @@ class MusicCog(commands.Cog):
                     for item in tracks[1:]:
                         if item['track']:
                             q_term = f"{item['track']['name']} {item['track']['artists'][0]['name']}"
-                            self.queue.append(q_term)
+                            self.queue.append((q_term, message))
                     await message.channel.send(f"✅ تم سحب قائمة Spotify! عدد المقاطع المضافة: {len(tracks)-1}")
             except Exception as e:
                 print("Failed to parse Spotify playlist:", e)
 
         vc = message.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
-            self.queue.append(search_term)
-            await message.add_reaction("🎵")
+            self.queue.append((search_term, message))
+            try:
+                await message.remove_reaction("🔍", self.bot.user)
+                await message.add_reaction("🎵")
+            except:
+                pass
             await message.channel.send(f"✅ تمت الإضافة إلى قائمة الانتظار (Added to queue)")
         else:
             await message.add_reaction("🔍")
             await self.process_and_play(search_term, message, target_channel)
+
 
     @commands.command(name="status", aliases=["info", "حالة"])
     @commands.check(check_chat)
