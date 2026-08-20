@@ -52,10 +52,11 @@ if os.path.exists('cookies.txt'):
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
 
 class PlayerControls(discord.ui.View):
-    def __init__(self, vc, connection_lock):
+    def __init__(self, vc, connection_lock, cog):
         super().__init__(timeout=None)
         self.vc = vc
         self._connection_lock = connection_lock
+        self.cog = cog
 
     @discord.ui.button(label="⏸️ Pause", style=discord.ButtonStyle.secondary)
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -73,18 +74,29 @@ class PlayerControls(discord.ui.View):
         else:
             await interaction.response.send_message("Not paused...", ephemeral=True)
 
-    @discord.ui.button(label="⏭️ Skip / ⏹️ Stop", style=discord.ButtonStyle.danger)
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.primary)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.vc and (self.vc.is_playing() or self.vc.is_paused()):
             self.vc.stop()
-            await interaction.response.send_message("⏹️ تم الإيقاف (Stopped)", ephemeral=True)
+            await interaction.response.send_message("⏭️ تم التخطي (Skipped)", ephemeral=True)
+        else:
+            await interaction.response.send_message("Nothing to skip...", ephemeral=True)
+
+    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.cog.queue.clear()
+        if self.vc and (self.vc.is_playing() or self.vc.is_paused()):
+            self.vc.stop()
+            await interaction.response.send_message("⏹️ تم الإيقاف و مسح القائمة (Stopped & Cleared)", ephemeral=True)
         else:
             await interaction.response.send_message("Nothing to stop...", ephemeral=True)
+
 
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._connection_lock = asyncio.Lock()
+        self.queue = []
 
     async def search_ytdl(self, query: str):
         # yt-dlp expects 'ytsearch:' prefix for generic searches
@@ -102,6 +114,41 @@ class MusicCog(commands.Cog):
             data = data['entries'][0]
             
         return data['url'], data.get('title', 'Unknown Title')
+
+    def play_next(self, error, message, target_channel):
+        if error:
+            print(f"Playback error: {error}")
+            
+        if len(self.queue) > 0:
+            audio_url, title = self.queue.pop(0)
+            asyncio.run_coroutine_threadsafe(self.start_playback(audio_url, title, message, target_channel), self.bot.loop)
+        else:
+            print("Queue finished.")
+
+    async def start_playback(self, audio_url, title, message, target_channel):
+        async with self._connection_lock:
+            vc = message.guild.voice_client
+            if not vc or not vc.is_connected():
+                try:
+                    vc = await target_channel.connect(timeout=10.0, reconnect=True)
+                except Exception as e:
+                    print(f"Voice Connection Error: {e}")
+                    await message.channel.send("❌ Error connecting to voice channel. Please try again.")
+                    return
+
+            try:
+                vc.play(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), after=lambda e: self.play_next(e, message, target_channel))
+                # Send Interactive Message
+                view = PlayerControls(vc, self._connection_lock, self)
+                embed = discord.Embed(
+                    title="🎵 جاري التشغيل / Now Playing", 
+                    description=f"**{title}**",
+                    color=discord.Color.green()
+                )
+                await message.channel.send(embed=embed, view=view)
+            except Exception as e:
+                print(f"Playback error: {e}")
+                await message.channel.send("❌ فشل التشغيل! يرجى المحاولة مرة أخرى. (Playback failed, please try again).")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -162,18 +209,25 @@ class MusicCog(commands.Cog):
             return
 
         # STRICT LOCK: Only allow usage if the user is in the designated voice channel!
-        if not message.author.voice or message.author.voice.channel.id != target_channel.id:
-            await message.channel.send("❌ عذراً، لا يمكنك استخدام البوت إلا إذا كنت متواجداً في غرفته الصوتية! (You must be in the bot's designated voice channel to use commands.)")
-            return
+        if getattr(self.bot, 'channel_id', None):
+            if not message.author.voice or message.author.voice.channel.id != target_channel.id:
+                await message.channel.send("❌ عذراً، لا يمكنك استخدام البوت إلا إذا كنت متواجداً في غرفته الصوتية! (You must be in the bot's designated voice channel to use commands.)")
+                return
 
         lower_q = raw_query.lower()
         if lower_q in ("stop", "leave"):
+            self.queue.clear()
             async with self._connection_lock:
                 if message.guild.voice_client:
                     await message.guild.voice_client.disconnect(force=True)
             await message.add_reaction("⏹️")
             return
-        elif lower_q in ("pause", "s"):
+        elif lower_q in ("skip", "s", "سكب"):
+            if message.guild.voice_client and message.guild.voice_client.is_playing():
+                message.guild.voice_client.stop() # Triggers the play_next callback implicitly
+            await message.add_reaction("⏭️")
+            return
+        elif lower_q in ("pause",):
             if message.guild.voice_client and message.guild.voice_client.is_playing():
                 message.guild.voice_client.pause()
             await message.add_reaction("⏸️")
@@ -193,27 +247,6 @@ class MusicCog(commands.Cog):
         if not search_term:
             return
 
-        async with self._connection_lock:
-            vc = message.guild.voice_client
-            if vc and not vc.is_connected():
-                try:
-                    await vc.disconnect(force=True)
-                except:
-                    pass
-                vc = None
-
-            if not vc:
-                try:
-                    vc = await target_channel.connect(timeout=10.0, reconnect=True)
-                except Exception as e:
-                    print(f"Voice Connection Error: {e}")
-                    await message.add_reaction("❌")
-                    await message.channel.send("❌ Error connecting to voice channel. Please try again.")
-                    return
-
-            if vc.is_playing():
-                vc.stop()
-
         await message.add_reaction("🔍")
         
         audio_url, title = await self.search_ytdl(search_term)
@@ -223,39 +256,17 @@ class MusicCog(commands.Cog):
             await message.channel.send("❌ حدث خطأ، يرجى المحاولة مرة أخرى! (Error fetching track, please try again).")
             return
 
-        try:
-            vc.play(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS))
-            await message.remove_reaction("🔍", self.bot.user)
+        await message.remove_reaction("🔍", self.bot.user)
+        
+        # QUEUE LOGIC INJECTION
+        vc = message.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            self.queue.append((audio_url, title))
             await message.add_reaction("🎵")
-            print(f"Now playing: {title}")
-            
-            # Send Interactive Message
-            view = PlayerControls(vc, self._connection_lock)
-            embed = discord.Embed(
-                title="🎵 جاري التشغيل / Now Playing", 
-                description=f"**{title}**",
-                color=discord.Color.green()
-            )
-            await message.channel.send(embed=embed, view=view)
-        except Exception as e:
-            print(f"Playback error: {e}")
-            await message.remove_reaction("🔍", self.bot.user)
-            await message.add_reaction("❌")
-            await message.channel.send("❌ فشل التشغيل! يرجى المحاولة مرة أخرى. (Playback failed, please try again).")
-        if not audio_url:
-            await message.remove_reaction("🔍", self.bot.user)
-            await message.add_reaction("❌")
-            return
-
-        try:
-            vc.play(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS))
-            await message.remove_reaction("🔍", self.bot.user)
+            await message.channel.send(f"✅ تمت الإضافة إلى قائمة الانتظار (Added to queue): **{title}**")
+        else:
             await message.add_reaction("🎵")
-            print(f"Now playing: {title}")
-        except Exception as e:
-            print(f"Playback error: {e}")
-            await message.remove_reaction("🔍", self.bot.user)
-            await message.add_reaction("❌")
+            await self.start_playback(audio_url, title, message, target_channel)
 
     @commands.command(name="status", aliases=["info", "حالة"])
     @commands.check(check_chat)
@@ -278,9 +289,10 @@ class MusicCog(commands.Cog):
             color=discord.Color.purple()
         )
         commands_list = [
-            (f"🎵 تشغيل أغنية", f"`{letter} <اسم المقطع>`"),
-            (f"⏹️ إيقاف / مغادرة", f"`{letter} stop`"),
-            (f"⏸️ إيقاف مؤقت", f"`{letter} pause` / `{letter} s`"),
+            (f"🎵 تشغيل أغنية / اضافة للقائمة", f"`{letter} <اسم المقطع>`"),
+            (f"⏭️ سكب / تخطي", f"`{letter} skip` / `{letter} s`"),
+            (f"⏹️ إيقاف / مسح القائمة", f"`{letter} stop`"),
+            (f"⏸️ إيقاف مؤقت", f"`{letter} pause`"),
             (f"▶️ استكمال", f"`{letter} resume`"),
         ]
         for name, value in commands_list:
