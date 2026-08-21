@@ -263,23 +263,28 @@ class MusicCog(commands.Cog):
             return
 
         if after.channel != target_voice_channel:
-            async with self._connection_lock:
-                vc = member.guild.voice_client
-                if after.channel is None:
+            if after.channel is None:
+                async with self._connection_lock:
+                    vc = member.guild.voice_client
                     if vc:
                         try:
                             await vc.disconnect(force=True)
                         except:
                             pass
-                    
-                    # Small cooldown to prevent rapid connect/disconnect API loops
-                    await asyncio.sleep(3.0)
-                    
-                    try:
-                        await target_voice_channel.connect(timeout=10.0, reconnect=True)
-                    except:
-                        pass
-                else:
+                
+                # Wait 20 seconds to prevent rapid connect/disconnect API loops
+                await asyncio.sleep(20.0)
+                
+                async with self._connection_lock:
+                    vc = member.guild.voice_client
+                    if not vc or not vc.is_connected():
+                        try:
+                            await target_voice_channel.connect(timeout=10.0, reconnect=True)
+                        except:
+                            pass
+            else:
+                async with self._connection_lock:
+                    vc = member.guild.voice_client
                     if vc and vc.is_connected():
                         await vc.move_to(target_voice_channel)
 

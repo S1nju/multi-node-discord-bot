@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+import asyncio
 from src.store import CHAT_IDS, C247_IDS
 from src.checks import check_chat
 
@@ -23,15 +24,31 @@ class SettingsCog(commands.Cog):
             forced_move = True
 
         if forced_move:
-            print(f"Bot was moved/disconnected from 24/7 channel in {member.guild.id}. Reconnecting...")
-            channel = member.guild.get_channel(c_247_id)
-            if channel:
+            print(f"Bot was moved/disconnected from 24/7 channel in {member.guild.id}. Waiting 20s before reconnecting...")
+            
+            if member.guild.voice_client:
                 try:
-                    if member.guild.voice_client:
-                        await member.guild.voice_client.disconnect(force=True)
-                    await channel.connect()
-                except Exception as e:
-                    print(f"Failed to reconnect back to 24/7 channel: {e}")
+                    await member.guild.voice_client.disconnect(force=True)
+                except:
+                    pass
+
+            await asyncio.sleep(20.0)
+            
+            c_247_id_new = C247_IDS.get(member.guild.id)
+            if not c_247_id_new:
+                return
+                
+            channel = member.guild.get_channel(c_247_id_new)
+            vc = member.guild.voice_client
+            
+            if channel:
+                if not vc or getattr(vc.channel, 'id', None) != c_247_id_new:
+                    try:
+                        if vc:
+                            await vc.disconnect(force=True)
+                        await channel.connect()
+                    except Exception as e:
+                        print(f"Failed to reconnect back to 24/7 channel: {e}")
 
     @commands.command(name="chat")
     @commands.has_permissions(administrator=True)
