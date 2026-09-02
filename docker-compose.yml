@@ -88,3 +88,13 @@ services:
       - ./shared_cache:/app/cache
     environment:
       - BOT_INDEX=9
+
+  bot10:
+    build: .
+    container_name: musicbots_10
+    restart: always
+    env_file: .env
+    volumes:
+      - ./shared_cache:/app/cache
+    environment:
+      - BOT_INDEX=10
